@@ -1,3 +1,25 @@
+//! HPKE encryption/decryption for Ed25519 keys.
+//!
+//! This library provides HPKE (Hybrid Public Key Encryption) support for Ed25519 keys
+//! by converting them to X25519 keys internally. It implements simple encryption and
+//! decryption traits on the standard `ed25519-dalek` key types.
+//!
+//! # Examples
+//!
+//! ```
+//! use ed25519_dalek::SigningKey;
+//! use ed25519_dalek_hpke::{Ed25519hpkeEncryption, Ed25519hpkeDecryption};
+//!
+//! let signing_key = SigningKey::generate(&mut rand::rng());
+//! let verifying_key = signing_key.verifying_key();
+//!
+//! let plaintext = b"secret message";
+//! let ciphertext = verifying_key.encrypt(plaintext).unwrap();
+//! let decrypted = signing_key.decrypt(&ciphertext).unwrap();
+//!
+//! assert_eq!(plaintext, decrypted.as_slice());
+//! ```
+
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -8,15 +30,17 @@ use hpke::Deserializable;
 use hpke::Kem;
 use hpke::OpModeS;
 use hpke::Serializable;
-use rand::rngs::StdRng;
-use rand::SeedableRng as _;
 use x25519_dalek::PublicKey as X25519PublicKey;
 use x25519_dalek::StaticSecret as X25519SecretKey;
 
+/// Errors that can occur during HPKE operations.
 #[derive(Debug)]
 pub enum Error {
+    /// Key format is invalid or conversion failed.
     InvalidKey,
+    /// HPKE encryption failed.
     EncryptionFailed,
+    /// HPKE decryption failed or ciphertext is malformed.
     DecryptionFailed,
 }
 
@@ -38,17 +62,29 @@ impl StdError for Error {
     }
 }
 
-pub trait Ed25519hpkeEncryption<VerifyingKey> {
+/// Trait for encrypting data with an Ed25519 verifying (public) key.
+///
+/// Uses HPKE with X25519, HKDF-SHA256, and ChaCha20Poly1305 AEAD.
+pub trait Ed25519hpkeEncryption {
+    /// Encrypts data using HPKE.
+    ///
+    /// # Returns
+    ///
+    /// Format: `[8-byte length][encapsulated key][ciphertext]`
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error>;
 }
 
-pub trait Ed25519hpkeDecryption<SigningKey> {
+/// Trait for decrypting data with an Ed25519 signing (private) key.
+///
+/// Uses HPKE with X25519, HKDF-SHA256, and ChaCha20Poly1305 AEAD.
+pub trait Ed25519hpkeDecryption {
+    /// Decrypts HPKE ciphertext in the format produced by `encrypt`.
     fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error>;
 }
 
-impl Ed25519hpkeEncryption<ed25519_dalek::VerifyingKey> for ed25519_dalek::VerifyingKey {
+impl Ed25519hpkeEncryption for ed25519_dalek::VerifyingKey {
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut csprng = StdRng::from_rng(&mut rand::rng());
+        let mut csprng = rand::rng();
 
         let recipient_x25519_public: X25519PublicKey = public_key_from_ed25519_to_x25519(self)?;
         let recipient_pk_bytes = recipient_x25519_public.to_bytes();
@@ -56,7 +92,7 @@ impl Ed25519hpkeEncryption<ed25519_dalek::VerifyingKey> for ed25519_dalek::Verif
             <X25519HkdfSha256 as hpke::Kem>::PublicKey::from_bytes(&recipient_pk_bytes)
                 .map_err(|_| Error::InvalidKey)?;
         let (encap_key, mut sender_context) =
-            hpke::setup_sender::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256, StdRng>(
+            hpke::setup_sender::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256, _>(
                 &OpModeS::Base,
                 &hpke_recipient_pk,
                 b"arbitrary_info_bytes",
@@ -79,7 +115,7 @@ impl Ed25519hpkeEncryption<ed25519_dalek::VerifyingKey> for ed25519_dalek::Verif
     }
 }
 
-impl Ed25519hpkeDecryption<ed25519_dalek::SigningKey> for ed25519_dalek::SigningKey {
+impl Ed25519hpkeDecryption for ed25519_dalek::SigningKey {
     fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
         let static_secret_key = secret_key_from_ed25519_to_x25519(self)?;
         let hpke_recipient_sk =
@@ -114,6 +150,7 @@ impl Ed25519hpkeDecryption<ed25519_dalek::SigningKey> for ed25519_dalek::Signing
     }
 }
 
+/// Converts an Ed25519 public key to X25519 (Curve25519 Montgomery form).
 pub fn public_key_from_ed25519_to_x25519(
     ed_verifying_key: &ed25519_dalek::VerifyingKey,
 ) -> Result<X25519PublicKey, Error> {
@@ -124,6 +161,7 @@ pub fn public_key_from_ed25519_to_x25519(
         .map_err(|_| Error::InvalidKey)
 }
 
+/// Converts an Ed25519 private key to X25519 scalar.
 pub fn secret_key_from_ed25519_to_x25519(
     ed_signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<X25519SecretKey, Error> {
@@ -141,8 +179,7 @@ mod tests {
     #[test]
     fn test_key_conversion_and_derivation() {
         // Generate Ed25519 keypair
-        let mut old_rng = rand_core::OsRng;
-        let signing_key = SigningKey::generate(&mut old_rng);
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
 
         // Convert Ed25519 public key to X25519
@@ -167,8 +204,7 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         // Generate Ed25519 keypair
-        let mut rng = rand_core::OsRng;
-        let signing_key = SigningKey::generate(&mut rng);
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
 
         // Test data
@@ -194,9 +230,8 @@ mod tests {
     #[test]
     fn test_encryption_different_keys() {
         // Generate two different keypairs
-        let mut rng = rand_core::OsRng;
-        let signing_key1 = SigningKey::generate(&mut rng);
-        let signing_key2 = SigningKey::generate(&mut rng);
+        let signing_key1 = SigningKey::generate(&mut rand::rng());
+        let signing_key2 = SigningKey::generate(&mut rand::rng());
         let verifying_key1 = signing_key1.verifying_key();
 
         let plaintext = b"Secret message";
@@ -213,8 +248,7 @@ mod tests {
 
     #[test]
     fn test_invalid_ciphertext() {
-        let mut rng = rand_core::OsRng;
-        let signing_key = SigningKey::generate(&mut rng);
+        let signing_key = SigningKey::generate(&mut rand::rng());
 
         // Try to decrypt invalid data
         let invalid_data = vec![1, 2, 3, 4, 5];

@@ -1,11 +1,9 @@
 use ed25519_dalek::SigningKey;
 use ed25519_dalek_hpke::{Ed25519hpkeEncryption, Ed25519hpkeDecryption};
-use rand_core::OsRng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a new Ed25519 keypair
-    let mut rng = OsRng;
-    let signing_key = SigningKey::generate(&mut rng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let verifying_key = signing_key.verifying_key();
 
     // Message to encrypt
