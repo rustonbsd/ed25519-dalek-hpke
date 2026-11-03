@@ -56,9 +56,7 @@ impl fmt::Display for Error {
 
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            _ => None,
-        }
+        None
     }
 }
 
@@ -84,19 +82,16 @@ pub trait Ed25519hpkeDecryption {
 
 impl Ed25519hpkeEncryption for ed25519_dalek::VerifyingKey {
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut csprng = rand::rng();
-
-        let recipient_x25519_public: X25519PublicKey = public_key_from_ed25519_to_x25519(self)?;
+        let recipient_x25519_public: X25519PublicKey = public_key_from_ed25519_to_x25519(self);
         let recipient_pk_bytes = recipient_x25519_public.to_bytes();
         let hpke_recipient_pk =
             <X25519HkdfSha256 as hpke::Kem>::PublicKey::from_bytes(&recipient_pk_bytes)
                 .map_err(|_| Error::InvalidKey)?;
         let (encap_key, mut sender_context) =
-            hpke::setup_sender::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256, _>(
+            hpke::setup_sender::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
                 &OpModeS::Base,
                 &hpke_recipient_pk,
                 b"arbitrary_info_bytes",
-                &mut csprng,
             )
             .map_err(|_| Error::EncryptionFailed)?;
 
@@ -117,7 +112,7 @@ impl Ed25519hpkeEncryption for ed25519_dalek::VerifyingKey {
 
 impl Ed25519hpkeDecryption for ed25519_dalek::SigningKey {
     fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let static_secret_key = secret_key_from_ed25519_to_x25519(self)?;
+        let static_secret_key = secret_key_from_ed25519_to_x25519(self);
         let hpke_recipient_sk =
             <X25519HkdfSha256 as Kem>::PrivateKey::from_bytes(static_secret_key.as_bytes())
                 .map_err(|_| Error::InvalidKey)?;
@@ -131,18 +126,19 @@ impl Ed25519hpkeDecryption for ed25519_dalek::SigningKey {
             return Err(Error::DecryptionFailed);
         }
         let (encapped_key, data) = data.split_at(key_len);
-        if data.len() == 0 {
+        if data.is_empty() {
             return Err(Error::DecryptionFailed);
         }
         let enc_key = <X25519HkdfSha256 as hpke::Kem>::EncappedKey::from_bytes(encapped_key)
             .map_err(|_| Error::InvalidKey)?;
-        let mut receiver_context = hpke::setup_receiver::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
-            &hpke::OpModeR::Base,
-            &hpke_recipient_sk,
-            &enc_key,
-            b"arbitrary_info_bytes",
-        )
-        .map_err(|_| Error::InvalidKey)?;
+        let mut receiver_context =
+            hpke::setup_receiver::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
+                &hpke::OpModeR::Base,
+                &hpke_recipient_sk,
+                &enc_key,
+                b"arbitrary_info_bytes",
+            )
+            .map_err(|_| Error::InvalidKey)?;
 
         receiver_context
             .open(data, b"arbitrary_seal_bytes")
@@ -153,22 +149,15 @@ impl Ed25519hpkeDecryption for ed25519_dalek::SigningKey {
 /// Converts an Ed25519 public key to X25519 (Curve25519 Montgomery form).
 pub fn public_key_from_ed25519_to_x25519(
     ed_verifying_key: &ed25519_dalek::VerifyingKey,
-) -> Result<X25519PublicKey, Error> {
-    ed_verifying_key
-        .to_montgomery()
-        .to_bytes()
-        .try_into()
-        .map_err(|_| Error::InvalidKey)
+) -> X25519PublicKey {
+    ed_verifying_key.to_montgomery().to_bytes().into()
 }
 
 /// Converts an Ed25519 private key to X25519 scalar.
 pub fn secret_key_from_ed25519_to_x25519(
     ed_signing_key: &ed25519_dalek::SigningKey,
-) -> Result<X25519SecretKey, Error> {
-    ed_signing_key
-        .to_scalar_bytes()
-        .try_into()
-        .map_err(|_| Error::InvalidKey)
+) -> X25519SecretKey {
+    ed_signing_key.to_scalar_bytes().into()
 }
 
 #[cfg(test)]
@@ -183,12 +172,10 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
 
         // Convert Ed25519 public key to X25519
-        let x25519_pub_from_ed = public_key_from_ed25519_to_x25519(&verifying_key)
-            .expect("Failed to convert Ed25519 public key to X25519");
+        let x25519_pub_from_ed = public_key_from_ed25519_to_x25519(&verifying_key);
 
         // Convert Ed25519 secret key to X25519
-        let x25519_secret = secret_key_from_ed25519_to_x25519(&signing_key)
-            .expect("Failed to convert Ed25519 secret key to X25519");
+        let x25519_secret = secret_key_from_ed25519_to_x25519(&signing_key);
 
         // Derive X25519 public key from secret key
         let x25519_pub_from_secret = X25519PublicKey::from(&x25519_secret);
@@ -212,7 +199,6 @@ mod tests {
 
         // Encrypt using Ed25519 public key
         let ciphertext = verifying_key.encrypt(plaintext);
-        println!("chiphertext: {:?}", ciphertext);
 
         // Decrypt using Ed25519 private key
         let decrypted = signing_key
@@ -253,7 +239,6 @@ mod tests {
         // Try to decrypt invalid data
         let invalid_data = vec![1, 2, 3, 4, 5];
         let result = signing_key.decrypt(&invalid_data);
-        println!("Decrypt: {result:?}");
         assert!(result.is_err(), "Decryption should fail with invalid data");
     }
 }
